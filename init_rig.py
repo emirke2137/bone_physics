@@ -5,7 +5,6 @@ from mathutils import Vector
 data = bpy.data.texts["data.py"].as_module()
 Point = data.Point
 Constraint = data.Constraint
-
 ##-----------------------
 
 armature = bpy.data.objects["Armature"]
@@ -26,16 +25,14 @@ def step(bone,parent):
         for c_bone in bone.children:
             #create point
             point = Point(
-                            (armature.matrix_world @ c_bone.tail).copy(),
-                            Vector((0,0,0)),
-                            c_bone.name,
-                            parent,
-                            1,
-                            (armature.matrix_world.to_3x3() @ bone.x_axis).normalized()
-                            #armature.matrix_world -> obj
-                            #to_3x3() -> only part of the mattrix that has rotation data
-                            #to_2x2() -> only z rotation
-                            #.x_axis -> rotaation and location in x axisg
+                            (armature.matrix_world @ c_bone.tail).copy(), #pos
+                            Vector((0,0,0)), #velocity
+                            c_bone.name, # name
+                            parent, # prev point
+                            1, # weight
+                            (armature.matrix_world.to_3x3() @ bone.matrix.to_3x3()).to_quaternion(),
+                             #orientation in world space
+                             bone.matrix.to_3x3().to_quaternion() # rest orientation in armature space
                             ) 
             #constrain to parent
             con = Constraint(parent, point, c_bone.length)
@@ -54,3 +51,4 @@ def init_rig():
     for p in points:
         print(p.name)
     return constraints,points,roots, control_bones
+

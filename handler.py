@@ -1,47 +1,52 @@
 import bpy
 from mathutils import Vector, Matrix, Quaternion
+from mathutils.bvhtree import BVHTree
 import math
+
+###### TEST AREA #########
+test_balls=[
+            bpy.data.objects['sphere'],
+            bpy.data.objects['sphere.001'],
+            bpy.data.objects['sphere.002'],
+            bpy.data.objects['sphere.003'],
+            bpy.data.objects['sphere.004'],
+]
+
+test_positions=[]
+
+##########################
+
 init_rig = bpy.data.texts["init_rig.py"].as_module().init_rig
 predict_positions = bpy.data.texts["physics.py"].as_module().predict_positions
 apply_constraints = bpy.data.texts["physics.py"].as_module().apply_constraints
 calculate_final_velocity = bpy.data.texts["physics.py"].as_module().calculate_final_velocity
 
-constraints, points, roots, control_bones = init_rig()
+distance_constraints, points, roots, control_bones = init_rig()
 #constraints    - representation of connections between bones
 #points         - representation of each bone (tail)
 #root           - collection of points of control bones, shared with points list
 #control_bones  - real equivalent of roots
+
+collision_group=[]
+for obj in bpy.data.objects:
+    if "collision" in obj and obj["collision"]==True:
+        collision_group.append(obj)
+colliders={} 
 armature = bpy.data.objects["Armature"]
 control_bone = armature.pose.bones[0]
-
-def remove_twist(direction, reference_x):
-    #stabilize bone twist
+ 
+def rotate_to_goal(prev_rotation,rest, direction):
     
-    x = reference_x - direction * reference_x.dot(direction)
+    #only the y roation part, set the rest to 0
+    old_y = prev_rotation @ Vector((0, 1, 0))
+    #reverse transformation the would lead to y axis pointing along direction from old_y
+    delta = old_y.rotation_difference(direction)
+    rotation = delta @ prev_rotation # quaternion
+    rest_global = armature.matrix_world.to_quaternion() @ rest
+    #smooth using rest rotation
+    rotation = rotation.slerp(rest_global, 0.05)
     
-    #reference_x.dot(direction) -> projection of direction (curent Y axis) on reference (old X axis)
-    #scalar value the will be 0 if they are perpendicular
-    
-    #direction * reference_x.dot(direction) -> the direction vector scaled by the amount they "lie" on x_reference
-    
-    #x = reference_x - direction * reference_x.dot(direction) -> move away from the old x axis, so that the new x axis is perpendicular to the new y
-
-    #how much the bone can twist
-    if x.length < 0.001:
-        return direction.to_track_quat('Y', 'Z').to_matrix()
-    
-    #make sure it has unit lengh 
-    x.normalize()
-    #create Z axis
-    z = direction.cross(x)#cross product gives a vector perpendicular to both direction and x
-    z.normalize()
-    
-    #calculate x again to eliminate errors from floating point acuracy
-    x = z.cross(direction)
-    x.normalize()
-
-    
-    return Matrix((x, direction, z)).transposed()
+    return rotation
     
 
 def apply_transform():
@@ -54,23 +59,23 @@ def apply_transform():
             direction = points[i].pos - points[i].prev_point.pos
             direction.normalize()
             
-            world_rotation = remove_twist(direction,
-                                            points[i].orientation)
+            new_rotation = rotate_to_goal(points[i].orientation,points[i].rest_position,direction)
+            points[i].orientation = new_rotation.copy()
+        
+            
             #put that transformation into a matrix
-            world_matrix = world_rotation.to_4x4()
+            world_matrix = new_rotation.to_matrix().to_4x4()
             #make transforamtion center at the previous bone tip
             world_matrix.translation = points[i].prev_point.pos
             # Convert world transform back into armature space
             #apply to bone
             armature.pose.bones[i].matrix = armature.matrix_world.inverted() @ world_matrix
-            #save orientation - it glitxesfd
-            #points[i].orientation = (armature.matrix_world.to_3x3() @ armature.pose.bones[i].x_axis).normalized()
-    
+        
+           
 
-    
 
 def simulate_cloak(dt): 
-    global constraints, points, armature, roots, control_bones
+    global distance_constraints, points, armature, roots, control_bones
     for i in range (len(control_bones)):
         
         #get new control bone position
@@ -80,27 +85,66 @@ def simulate_cloak(dt):
         #override prev position with curent to be used in next step
         roots[i].prev_pos = roots[i].pos.copy()
     
+    
+    
     predict_positions(dt,points)
-    apply_constraints(dt,constraints)
+    
+    ######## TEST AREA ########
+    global test_balls,test_cones,test_positions
+    for i in range(5):
+        vec = points[i].pos.copy()
+        test_positions.append(vec)
+    ###########################
+    
+    colliders=build_bvh()
+    #colision_constraints=find_collisions(points,colliders)
+    #print()
+    #print(colision_constraints)
+    apply_constraints(dt,distance_constraints,points,colliders)
     calculate_final_velocity(dt,points)
     apply_transform()
+    ######## TEST AREA ########
+    for i in range(5):
+  
+        test_balls[i].location = test_positions[i] 
+        #test_cones[i].location = test_positions2[i]
+    test_positions=[]
+    test_positions2=[]
     
- 
+    ###########################
+    
+
+def build_bvh():
+    colliders={}
+    
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    for obj in collision_group:
+        #obj with applied modifiers
+        obj_eval = obj.evaluated_get(depsgraph)
+     
+        #verts = [Vector, Vector, Vector...]
+        verts = [obj_eval.matrix_world @ v.co for v in obj_eval.data.vertices]
+        #polygons = [[1,2,6,5],[5,6,4,3]...]
+        polygons = [[v for v in poly.vertices] for poly in obj_eval.data.polygons]
+        bvh = BVHTree.FromPolygons(verts, polygons)
+        
+        colliders[obj]=bvh
+    return colliders
+
+
  
 def is_playing():
     if bpy.context.screen and bpy.context.screen.is_animation_playing:
         return True
     
-def update_real_time(scene):
+def update_real_time(scene,a):
     if is_playing():
         return # do nothing if animation is playing
-
-    print("real")
     dt = 1.0 / scene.render.fps #make more acurate
     simulate_cloak(dt)
     
-def update_playback(scene):
-    print("play")
+def update_playback(scene,a):
+    
     dt = 1.0 / scene.render.fps #make more acurate
     simulate_cloak(dt)
     
